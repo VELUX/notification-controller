@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"strconv"
 
 	"github.com/IBM/sarama"
 
@@ -33,7 +34,7 @@ type Kafka struct {
 	topic string
 }
 
-// ensure *GooglePubSub implements Interface.
+// ensure *Kafka implements Interface.
 var _ Interface = &Kafka{}
 
 
@@ -58,6 +59,8 @@ func NewKafka(opts *notifierOptions) (*Kafka, error) {
 		config.Net.TLS.Config = opts.TLSConfig
 	}
 
+	parseSASLConfig(opts.SecretData, opts.Username, opts.Password, config)
+
 	// Create producer
 	producer, err := sarama.NewSyncProducer(brokers, config)
 	if err != nil {
@@ -79,5 +82,56 @@ func (g *Kafka) Post(ctx context.Context, event eventv1.Event) error {
 
 	return nil
 
+}
+
+
+// parseSASLConfig parses secret data into SASL configuration
+func parseSASLConfig(secretData map[string][]byte, username, password string, config *sarama.Config) error {
+
+	// If no username/password provided, assume no SASL
+	if username == "" || password == "" {
+		return nil
+	}
+
+	// Enable SASL
+	config.Net.SASL.Enable = true
+	config.Net.SASL.User = username
+	config.Net.SASL.Password = password
+
+	// Parse mechanism (default to PLAIN)
+	config.Net.SASL.Mechanism = sarama.SASLTypePlaintext
+	if mechanism, exists := secretData["sasl-mechanism"]; exists {
+		switch strings.ToUpper(string(mechanism)) {
+		case "PLAIN":
+			config.Net.SASL.Mechanism = sarama.SASLTypePlaintext
+		case "OAUTHBEARER":
+			config.Net.SASL.Mechanism = sarama.SASLTypeOAuth
+		default:
+			return fmt.Errorf("unsupported SASL mechanism: %s", string(mechanism))
+		}
+	}
+
+	// Parse version (default to V1)
+	if version, exists := secretData["sasl-version"]; exists {
+		v, err := strconv.Atoi(string(version))
+		if err != nil {
+			return fmt.Errorf("invalid SASL version: %s", string(version))
+		}
+		config.Net.SASL.Version = int16(v)
+	}
+
+	// Parse handshake (default to true)
+	if handshake, exists := secretData["sasl-handshake"]; exists {
+		if strings.ToLower(string(handshake)) == "false" {
+			config.Net.SASL.Handshake = false
+		}
+	}
+
+	// Parse auth identity (optional)
+	if authIdentity, exists := secretData["sasl-auth-identity"]; exists {
+		config.Net.SASL.AuthIdentity = string(authIdentity)
+	}
+
+	return nil
 }
 
