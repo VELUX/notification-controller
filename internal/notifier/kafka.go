@@ -18,58 +18,67 @@ package notifier
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"strconv"
+	"strings"
 
 	"github.com/IBM/sarama"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	eventv1 "github.com/fluxcd/pkg/apis/event/v1beta1"
 )
 
-
 type Kafka struct {
 	producer sarama.SyncProducer
-	topic string
+	topic    string
 }
 
 // ensure *Kafka implements Interface.
 var _ Interface = &Kafka{}
 
-
-func NewKafka(opts *notifierOptions) (*Kafka, error) {
-	if opts.URL == "" {
+func NewKafka(brokers, topic, clientID, username, password string, tlsConfig *tls.Config, secretData map[string][]byte) (*Kafka, error) {
+	if brokers == "" {
 		return nil, errors.New("Kafka brokers cannot be empty")
 	}
 
-	if opts.Channel == "" {
+	if topic == "" {
 		return nil, errors.New("Kafka topic cannot be empty")
 	}
 
-	brokers := strings.Split(strings.TrimSpace(opts.URL), ",")
-
 	// Create Sarama config
 	config := sarama.NewConfig()
-	config.ClientID = opts.ProviderName
+	config.ClientID = clientID
+
+	// Required for SyncProducer
+	config.Producer.Return.Errors = true
+	config.Producer.Return.Successes = true
 
 	// Add TLS config if provided
-	if opts.TLSConfig != nil {
+	if tlsConfig != nil {
 		config.Net.TLS.Enable = true
-		config.Net.TLS.Config = opts.TLSConfig
+		config.Net.TLS.Config = tlsConfig
 	}
 
-	parseSASLConfig(opts.SecretData, opts.Username, opts.Password, config)
+	// Configure SASL if credentials provided
+	if err := configureSASL(config, secretData, username, password); err != nil {
+		return nil, fmt.Errorf("failed to configure SASL: %w", err)
+	}
+
+	configureSASL(config, secretData, username, password)
 
 	// Create producer
-	producer, err := sarama.NewSyncProducer(brokers, config)
+	producer, err := sarama.NewSyncProducer(strings.Split(strings.TrimSpace(brokers), ","), config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kafka producer: %w", err)
 	}
 
 	return &Kafka{
 		producer: producer,
-		topic:    opts.Channel,
+		topic:    topic,
 	}, nil
 }
 
@@ -80,14 +89,31 @@ func (g *Kafka) Post(ctx context.Context, event eventv1.Event) error {
 		return nil
 	}
 
-	return nil
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal event: %w", err)
+	}
 
+	msg := &sarama.ProducerMessage{
+		Topic: g.topic,
+		Value: sarama.ByteEncoder(payload),
+	}
+
+	partition, offset, err := g.producer.SendMessage(msg)
+	if err != nil {
+		return err
+	}
+
+	log.FromContext(ctx).V(1).Info("Event published to Kafka Topic",
+		"topic", g.topic,
+		"offset", offset,
+		"partition", partition)
+
+	return nil
 }
 
-
-// parseSASLConfig parses secret data into SASL configuration
-func parseSASLConfig(secretData map[string][]byte, username, password string, config *sarama.Config) error {
-
+// configureSASL configures SASL authentication on the provided Sarama config
+func configureSASL(config *sarama.Config, secretData map[string][]byte, username, password string) error {
 	// If no username/password provided, assume no SASL
 	if username == "" || password == "" {
 		return nil
@@ -134,4 +160,3 @@ func parseSASLConfig(secretData map[string][]byte, username, password string, co
 
 	return nil
 }
-

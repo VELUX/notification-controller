@@ -371,7 +371,5 @@ func otelNotifierFunc(opts notifierOptions) (Interface, error) {
 }
 
 func kafkaFunc(opts notifierOptions) (Interface, error) {
-	// TODO: 
-	
-	return nil, nil
+	return NewKafka(opts.URL, opts.Channel, opts.ProviderName, opts.Username, opts.Password, opts.TLSConfig, opts.SecretData)
 }
