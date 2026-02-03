@@ -62,6 +62,7 @@ var (
 		apiv1.AzureDevOpsProvider:     azureDevOpsNotifierFunc,
 		apiv1.ZulipProvider:           zulipNotifierFunc,
 		apiv1.OTELProvider:            otelNotifierFunc,
+		apiv1.KafkaProvider:           kafkaFunc,
 	}
 )
 
@@ -367,4 +368,10 @@ func otelNotifierFunc(opts notifierOptions) (Interface, error) {
 		opts.Token = opts.Password
 	}
 	return NewOTLPTracer(opts.Context, opts.URL, opts.ProxyURL, opts.Headers, opts.TLSConfig, opts.Username, opts.Token)
+}
+
+func kafkaFunc(opts notifierOptions) (Interface, error) {
+	// TODO: 
+	
+	return nil, nil
 }
