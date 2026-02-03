@@ -35,12 +35,13 @@ import (
 type Kafka struct {
 	producer sarama.SyncProducer
 	topic    string
+	headers  []sarama.RecordHeader
 }
 
 // ensure *Kafka implements Interface.
 var _ Interface = &Kafka{}
 
-func NewKafka(brokers, topic, clientID, username, password string, tlsConfig *tls.Config, secretData map[string][]byte) (*Kafka, error) {
+func NewKafka(brokers, topic, clientID, username, password string, tlsConfig *tls.Config, secretData map[string][]byte, headers map[string]string) (*Kafka, error) {
 	if brokers == "" {
 		return nil, errors.New("Kafka brokers cannot be empty")
 	}
@@ -68,8 +69,6 @@ func NewKafka(brokers, topic, clientID, username, password string, tlsConfig *tl
 		return nil, fmt.Errorf("failed to configure SASL: %w", err)
 	}
 
-	configureSASL(config, secretData, username, password)
-
 	// Create producer
 	producer, err := sarama.NewSyncProducer(strings.Split(strings.TrimSpace(brokers), ","), config)
 	if err != nil {
@@ -79,6 +78,7 @@ func NewKafka(brokers, topic, clientID, username, password string, tlsConfig *tl
 	return &Kafka{
 		producer: producer,
 		topic:    topic,
+		headers:  mapToRecordHeaders(headers),
 	}, nil
 }
 
@@ -95,8 +95,9 @@ func (g *Kafka) Post(ctx context.Context, event eventv1.Event) error {
 	}
 
 	msg := &sarama.ProducerMessage{
-		Topic: g.topic,
-		Value: sarama.ByteEncoder(payload),
+		Topic:   g.topic,
+		Value:   sarama.ByteEncoder(payload),
+		Headers: g.headers,
 	}
 
 	partition, offset, err := g.producer.SendMessage(msg)
@@ -159,4 +160,16 @@ func configureSASL(config *sarama.Config, secretData map[string][]byte, username
 	}
 
 	return nil
+}
+
+// mapToRecordHeaders converts a map of headers to Sarama RecordHeaders
+func mapToRecordHeaders(headers map[string]string) []sarama.RecordHeader {
+	result := make([]sarama.RecordHeader, 0, len(headers))
+	for k, v := range headers {
+		result = append(result, sarama.RecordHeader{
+			Key:   []byte(k),
+			Value: []byte(v),
+		})
+	}
+	return result
 }
