@@ -17,121 +17,50 @@ limitations under the License.
 package notifier
 
 import (
-	"context"
 	"errors"
 	"testing"
 
 	. "github.com/onsi/gomega"
-
-	eventv1 "github.com/fluxcd/pkg/apis/event/v1beta1"
 )
 
-func TestNewGooglePubSub(t *testing.T) {
+func TestNewKafka(t *testing.T) {
 	tests := []struct {
-		name        string
-		projectID   string
-		topicID     string
-		expectedErr error
+		name          string
+		brokers       string
+		topic         string
+		expectedErr   error
+		expectedTopic string
 	}{
 		{
-			name:        "empty project ID is not allowed",
-			projectID:   "",
-			expectedErr: errors.New("GCP project ID cannot be empty"),
+			name:        "empty topic is not allowed",
+			brokers:     "localhost:9092",
+			topic:       "",
+			expectedErr: errors.New("Kafka topic cannot be empty"),
 		},
 		{
-			name:        "empty topic ID is not allowed",
-			projectID:   "project-id",
-			topicID:     "",
-			expectedErr: errors.New("GCP Pub/Sub topic ID cannot be empty"),
+			name:          "valid inputs",
+			brokers:       "localhost:9092",
+			topic:         "topic",
+			expectedErr:   nil,
+			expectedTopic: "topic",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewWithT(t)
-			provider, err := NewGooglePubSub(&notifierOptions{
-				URL:     tt.projectID,
-				Channel: tt.topicID,
-			})
+			provider, err := NewKafka(tt.brokers, tt.topic, "", "", "", nil, nil, nil)
 
-			g.Expect(err).To(Equal(tt.expectedErr))
-			g.Expect(provider).To(BeNil())
-		})
-	}
-}
-
-type googlePubSubPostTestCase struct {
-	name                 string
-	topicID              string
-	attrs                map[string]string
-	topicName            string
-	event                eventv1.Event
-	expectedEventPayload string
-	publishErr           error
-	expectedErr          error
-	publishShouldExecute bool
-	publishExecuted      bool
-
-	g *WithT
-}
-
-func (tt *googlePubSubPostTestCase) publish(ctx context.Context, eventPayload []byte) error {
-	tt.g.THelper()
-	tt.publishExecuted = true
-	tt.g.Expect(string(eventPayload)).To(Equal(tt.expectedEventPayload))
-	return tt.publishErr
-}
-
-func TestGooglePubSubPost(t *testing.T) {
-	tests := []*googlePubSubPostTestCase{
-		{
-			name: "events are properly marshaled",
-			event: eventv1.Event{
-				Metadata: map[string]string{"foo": "bar"},
-			},
-			expectedEventPayload: `{"involvedObject":{},"severity":"","timestamp":null,"message":"","reason":"","metadata":{"foo":"bar"},"reportingController":""}`,
-			publishShouldExecute: true,
-		},
-		{
-			name: "commit status updates are dropped",
-			event: eventv1.Event{
-				Metadata: map[string]string{"commit_status": "update"},
-			},
-			publishShouldExecute: false,
-		},
-		{
-			name:                 "publish error is relayed",
-			expectedEventPayload: `{"involvedObject":{},"severity":"","timestamp":null,"message":"","reason":"","reportingController":""}`,
-			topicName:            "projects/projectID/topics/topicID",
-			publishErr:           errors.New("publish error"),
-			expectedErr:          errors.New("publish error"),
-			publishShouldExecute: true,
-		},
-		{
-			name:                 "topic and attributes are relayed to the internal client",
-			topicID:              "topicID",
-			attrs:                map[string]string{"foo": "bar"},
-			expectedEventPayload: `{"involvedObject":{},"severity":"","timestamp":null,"message":"","reason":"","reportingController":""}`,
-			publishShouldExecute: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			g := NewWithT(t)
-			tt.g = g
-
-			topic := &GooglePubSub{
-				client: tt,
-			}
-
-			err := topic.Post(context.Background(), tt.event)
-			if tt.expectedErr == nil {
-				g.Expect(err).To(BeNil())
-			} else {
+			if tt.expectedErr != nil {
 				g.Expect(err).To(Equal(tt.expectedErr))
+				g.Expect(provider).To(BeNil())
+			} else {
+				g.Expect(err).To(BeNil())
+				g.Expect(provider).NotTo(BeNil())
+
+				g.Expect(provider.topic).To(Equal(tt.expectedTopic))
+
 			}
-			g.Expect(tt.publishExecuted).To(Equal(tt.publishShouldExecute))
 		})
 	}
 }
