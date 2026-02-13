@@ -82,7 +82,7 @@ func NewKafka(brokers, topic, clientID, username, password string, tlsConfig *tl
 	}, nil
 }
 
-// Post posts Flux events to a Google Pub/Sub topic.
+// Post posts Flux events to a Kafka Pub/Sub topic.
 func (g *Kafka) Post(ctx context.Context, event eventv1.Event) error {
 	// Skip Git commit status update event.
 	if event.HasMetadata(eventv1.MetaCommitStatusKey, eventv1.MetaCommitStatusUpdateValue) {
