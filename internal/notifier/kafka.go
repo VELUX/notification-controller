@@ -42,35 +42,22 @@ type Kafka struct {
 var _ Interface = &Kafka{}
 
 func NewKafka(brokers, topic, clientID, username, password string, tlsConfig *tls.Config, secretData map[string][]byte, headers map[string]string) (*Kafka, error) {
-	if brokers == "" {
-		return nil, errors.New("Kafka brokers cannot be empty")
+	brokerList, err := parseBrokers(brokers)
+	if err != nil {
+		return nil, err
 	}
 
 	if topic == "" {
 		return nil, errors.New("Kafka topic cannot be empty")
 	}
 
-	// Create Sarama config
-	config := sarama.NewConfig()
-	config.ClientID = clientID
-
-	// Required for SyncProducer
-	config.Producer.Return.Errors = true
-	config.Producer.Return.Successes = true
-
-	// Add TLS config if provided
-	if tlsConfig != nil {
-		config.Net.TLS.Enable = true
-		config.Net.TLS.Config = tlsConfig
-	}
-
-	// Configure SASL if credentials provided
-	if err := configureSASL(config, secretData, username, password); err != nil {
-		return nil, fmt.Errorf("failed to configure SASL: %w", err)
+	config, err := buildKafkaConfig(clientID, username, password, tlsConfig, secretData)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create producer
-	producer, err := sarama.NewSyncProducer(strings.Split(strings.TrimSpace(brokers), ","), config)
+	producer, err := sarama.NewSyncProducer(brokerList, config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kafka producer: %w", err)
 	}
@@ -111,6 +98,50 @@ func (g *Kafka) Post(ctx context.Context, event eventv1.Event) error {
 		"partition", partition)
 
 	return nil
+}
+
+// parseBrokers splits and validates the broker string.
+func parseBrokers(brokers string) ([]string, error) {
+	if brokers == "" {
+		return nil, errors.New("Kafka brokers cannot be empty")
+	}
+
+	var result []string
+	for b := range strings.SplitSeq(brokers, ",") {
+		b = strings.TrimSpace(b)
+		if b != "" {
+			result = append(result, b)
+		}
+	}
+
+	if len(result) == 0 {
+		return nil, errors.New("Kafka brokers cannot be empty")
+	}
+
+	return result, nil
+}
+
+// buildKafkaConfig creates a Sarama config with TLS and SASL settings.
+func buildKafkaConfig(clientID, username, password string, tlsConfig *tls.Config, secretData map[string][]byte) (*sarama.Config, error) {
+	config := sarama.NewConfig()
+	config.ClientID = clientID
+
+	// Required for SyncProducer
+	config.Producer.Return.Errors = true
+	config.Producer.Return.Successes = true
+
+	// Add TLS config if provided
+	if tlsConfig != nil {
+		config.Net.TLS.Enable = true
+		config.Net.TLS.Config = tlsConfig
+	}
+
+	// Configure SASL if credentials provided
+	if err := configureSASL(config, secretData, username, password); err != nil {
+		return nil, fmt.Errorf("failed to configure SASL: %w", err)
+	}
+
+	return config, nil
 }
 
 // configureSASL configures SASL authentication on the provided Sarama config

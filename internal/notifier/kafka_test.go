@@ -18,6 +18,7 @@ package notifier
 
 import (
 	"context"
+	"crypto/tls"
 	"testing"
 
 	"github.com/IBM/sarama"
@@ -27,47 +28,161 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// func TestNewKafka(t *testing.T) {
-// 	tests := []struct {
-// 		name          string
-// 		brokers       string
-// 		topic         string
-// 		expectedErr   error
-// 		expectedTopic string
-// 	}{
-// 		{
-// 			name:        "empty topic is not allowed",
-// 			brokers:     "localhost:9092",
-// 			topic:       "",
-// 			expectedErr: errors.New("Kafka topic cannot be empty"),
-// 		},
-// 		{
-// 			name:          "valid inputs",
-// 			brokers:       "localhost:9092",
-// 			topic:         "topic",
-// 			expectedErr:   nil,
-// 			expectedTopic: "topic",
-// 		},
-// 	}
-//
-// 	for _, tt := range tests {
-// 		t.Run(tt.name, func(t *testing.T) {
-// 			g := NewWithT(t)
-// 			provider, err := NewKafka(tt.brokers, tt.topic, "", "", "", nil, nil, nil)
-//
-// 			if tt.expectedErr != nil {
-// 				g.Expect(err).To(Equal(tt.expectedErr))
-// 				g.Expect(provider).To(BeNil())
-// 			} else {
-// 				g.Expect(err).To(BeNil())
-// 				g.Expect(provider).NotTo(BeNil())
-//
-// 				g.Expect(provider.topic).To(Equal(tt.expectedTopic))
-//
-// 			}
-// 		})
-// 	}
-// }
+func TestParseBrokers(t *testing.T) {
+	tests := []struct {
+		name        string
+		brokers     string
+		expected    []string
+		expectedErr string
+	}{
+		{
+			name:        "empty string",
+			brokers:     "",
+			expectedErr: "Kafka brokers cannot be empty",
+		},
+		{
+			name:     "single broker",
+			brokers:  "localhost:9092",
+			expected: []string{"localhost:9092"},
+		},
+		{
+			name:     "multiple brokers",
+			brokers:  "broker1:9092,broker2:9092,broker3:9092",
+			expected: []string{"broker1:9092", "broker2:9092", "broker3:9092"},
+		},
+		{
+			name:     "brokers with whitespace",
+			brokers:  " broker1:9092 , broker2:9092 ",
+			expected: []string{"broker1:9092", "broker2:9092"},
+		},
+		{
+			name:        "only commas",
+			brokers:     ",,,",
+			expectedErr: "Kafka brokers cannot be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			result, err := parseBrokers(tt.brokers)
+			if tt.expectedErr != "" {
+				g.Expect(err).To(HaveOccurred())
+				g.Expect(err.Error()).To(Equal(tt.expectedErr))
+			} else {
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(result).To(Equal(tt.expected))
+			}
+		})
+	}
+}
+
+func TestBuildKafkaConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		clientID    string
+		username    string
+		password    string
+		tlsConfig   *tls.Config
+		secretData  map[string][]byte
+		expectedErr string
+		validate    func(g Gomega, config *sarama.Config)
+	}{
+		{
+			name:     "basic config",
+			clientID: "test-client",
+			validate: func(g Gomega, config *sarama.Config) {
+				g.Expect(config.ClientID).To(Equal("test-client"))
+				g.Expect(config.Producer.Return.Errors).To(BeTrue())
+				g.Expect(config.Producer.Return.Successes).To(BeTrue())
+				g.Expect(config.Net.TLS.Enable).To(BeFalse())
+				g.Expect(config.Net.SASL.Enable).To(BeFalse())
+			},
+		},
+		{
+			name:      "with TLS",
+			clientID:  "test-client",
+			tlsConfig: &tls.Config{},
+			validate: func(g Gomega, config *sarama.Config) {
+				g.Expect(config.Net.TLS.Enable).To(BeTrue())
+				g.Expect(config.Net.TLS.Config).NotTo(BeNil())
+			},
+		},
+		{
+			name:     "with SASL plain",
+			clientID: "test-client",
+			username: "user",
+			password: "pass",
+			validate: func(g Gomega, config *sarama.Config) {
+				g.Expect(config.Net.SASL.Enable).To(BeTrue())
+				g.Expect(config.Net.SASL.User).To(Equal("user"))
+				g.Expect(config.Net.SASL.Password).To(Equal("pass"))
+				g.Expect(config.Net.SASL.Mechanism).To(Equal(sarama.SASLMechanism("PLAIN")))
+			},
+		},
+		{
+			name:     "with SASL oauth",
+			clientID: "test-client",
+			username: "user",
+			password: "pass",
+			secretData: map[string][]byte{
+				"sasl-mechanism": []byte("OAUTHBEARER"),
+			},
+			validate: func(g Gomega, config *sarama.Config) {
+				g.Expect(config.Net.SASL.Enable).To(BeTrue())
+				g.Expect(config.Net.SASL.User).To(Equal("user"))
+				g.Expect(config.Net.SASL.Password).To(Equal("pass"))
+				g.Expect(config.Net.SASL.Mechanism).To(Equal(sarama.SASLMechanism("OAUTHBEARER")))
+			},
+		},
+		{
+			name:     "unsupported SASL mechanism",
+			username: "user",
+			password: "pass",
+			secretData: map[string][]byte{
+				"sasl-mechanism": []byte("SCRAM"),
+			},
+			expectedErr: "failed to configure SASL: unsupported SASL mechanism: SCRAM",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			config, err := buildKafkaConfig(tt.clientID, tt.username, tt.password, tt.tlsConfig, tt.secretData)
+			if tt.expectedErr != "" {
+				g.Expect(err).To(HaveOccurred())
+				g.Expect(err.Error()).To(Equal(tt.expectedErr))
+			} else {
+				g.Expect(err).NotTo(HaveOccurred())
+				tt.validate(g, config)
+			}
+		})
+	}
+}
+
+func TestMapToRecordHeaders(t *testing.T) {
+	g := NewWithT(t)
+
+	headers := mapToRecordHeaders(map[string]string{
+		"key1": "value1",
+		"key2": "value2",
+	})
+
+	g.Expect(headers).To(HaveLen(2))
+	g.Expect(headers).To(ContainElement(sarama.RecordHeader{
+		Key: []byte("key1"), Value: []byte("value1"),
+	}))
+	g.Expect(headers).To(ContainElement(sarama.RecordHeader{
+		Key: []byte("key2"), Value: []byte("value2"),
+	}))
+}
+
+func TestMapToRecordHeaders_Empty(t *testing.T) {
+	g := NewWithT(t)
+	headers := mapToRecordHeaders(nil)
+	g.Expect(headers).To(BeEmpty())
+}
 
 func TestKafka_Post(t *testing.T) {
 	tests := []struct {
@@ -122,22 +237,18 @@ func TestKafka_Post(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewWithT(t)
 
-			// Create mock producer
 			mockProducer := mocks.NewSyncProducer(t, nil)
 
 			if !tt.skipEvent {
-				// Configure expected behavior - expect message to be sent successfully
 				mockProducer.ExpectSendMessageAndSucceed()
 			}
 
-			// Create Kafka instance with mock producer
 			kafka := &Kafka{
 				producer: mockProducer,
 				topic:    tt.topic,
 				headers:  tt.headers,
 			}
 
-			// Test the Post method
 			err := kafka.Post(context.Background(), tt.event)
 
 			if tt.expectedError {
@@ -146,7 +257,6 @@ func TestKafka_Post(t *testing.T) {
 				g.Expect(err).NotTo(HaveOccurred())
 			}
 
-			// Close the mock producer to verify all expectations were met
 			err = mockProducer.Close()
 			g.Expect(err).NotTo(HaveOccurred())
 		})
